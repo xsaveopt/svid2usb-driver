@@ -1,0 +1,16 @@
+[package]
+name = "em28281"
+description = "Userspace driver for the Empia EM28281 analog video grabber used in the StarTech SVID2USB232"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+libusb1-sys.workspace = true
+rusb.workspace = true
+thiserror.workspace = true
+
+[lints]
+workspace = true
