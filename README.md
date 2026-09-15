@@ -7,18 +7,20 @@ Picture controls such as brightness, hue, sharpness, gamma and the RGB gains sit
 
 ## Installation
 
-Unpack the zip from the latest release, then clear the quarantine flag and copy the plugin into place before restarting OBS.
+Each release ships a universal zip that runs on both Apple silicon and Intel Macs.
+Unpack it, then clear the quarantine flag and copy the plugin into place before restarting OBS.
 
 ```sh
 xattr -dr com.apple.quarantine svid2usb.plugin
 cp -R svid2usb.plugin ~/Library/Application\ Support/obs-studio/plugins/
 ```
 
-## Usage
-
-Add an SVID2USB232 Capture source, pick the input and video standard, tune the picture sliders, and set a deinterlacing mode such as Yadif 2x on it.
+Once OBS is back up, add an SVID2USB232 Capture source, pick the input and video standard, tune the picture sliders, and set a deinterlacing mode such as Yadif 2x on it.
 
 ## Building
+
+Building needs a Rust toolchain.
+The tests cover the workspace, and the install task builds svid2usb.plugin for the current Mac and copies it into the OBS plugins folder.
 
 ```sh
 cargo test --workspace
