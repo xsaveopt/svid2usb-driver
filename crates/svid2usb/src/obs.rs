@@ -74,14 +74,19 @@ fn cstring(text: &str) -> CString {
     CString::new(text).expect("OBS strings have no NUL bytes")
 }
 
+pub(crate) trait Settings {
+    fn int(&self, key: &str) -> i64;
+    fn set_default_int(&self, key: &str, value: i64);
+}
+
 pub(crate) struct Data(*mut sys::obs_data_t);
 
-impl Data {
-    pub(crate) fn int(&self, key: &str) -> i64 {
+impl Settings for Data {
+    fn int(&self, key: &str) -> i64 {
         unsafe { sys::obs_data_get_int(self.0, cstring(key).as_ptr()) }
     }
 
-    pub(crate) fn set_default_int(&self, key: &str, value: i64) {
+    fn set_default_int(&self, key: &str, value: i64) {
         unsafe { sys::obs_data_set_default_int(self.0, cstring(key).as_ptr(), value) };
     }
 }

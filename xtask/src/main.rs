@@ -138,18 +138,24 @@ fn bindings(root: &Path) -> Result<()> {
     Ok(())
 }
 
+fn dylib_path(root: &Path, target: Option<&str>) -> PathBuf {
+    let mut dir = root.join("target");
+    if let Some(target) = target {
+        dir.push(target);
+    }
+    dir.join("release").join(format!("lib{PLUGIN}.dylib"))
+}
+
 fn cargo_build(root: &Path, target: Option<&str>, version: &str) -> Result<PathBuf> {
     let mut cmd = Command::new(std::env::var("CARGO").unwrap_or_else(|_| "cargo".into()));
     cmd.current_dir(root)
         .args(["build", "--release", "--package", PLUGIN])
         .env("SVID2USB_VERSION", version);
-    let mut dir = root.join("target");
     if let Some(target) = target {
         cmd.args(["--target", target]);
-        dir.push(target);
     }
     run(&mut cmd)?;
-    Ok(dir.join("release").join(format!("lib{PLUGIN}.dylib")))
+    Ok(dylib_path(root, target))
 }
 
 fn merge(parts: &[PathBuf], dest: &Path) -> Result<()> {
@@ -189,16 +195,34 @@ fn info_plist(version: &str) -> String {
     )
 }
 
+struct Layout {
+    plugin: PathBuf,
+    info_plist: PathBuf,
+    executable: PathBuf,
+}
+
+fn layout(dir: &Path) -> Layout {
+    let plugin = dir.join(format!("{PLUGIN}.plugin"));
+    Layout {
+        info_plist: plugin.join("Contents/Info.plist"),
+        executable: plugin.join("Contents/MacOS").join(PLUGIN),
+        plugin,
+    }
+}
+
 fn assemble(dir: &Path, builds: &[PathBuf], version: &str) -> Result<()> {
     if dir.exists() {
         fs::remove_dir_all(dir)?;
     }
-    let plugin = dir.join(format!("{PLUGIN}.plugin"));
-    let macos = plugin.join("Contents/MacOS");
-    fs::create_dir_all(&macos)?;
-    fs::write(plugin.join("Contents/Info.plist"), info_plist(version))?;
-    merge(builds, &macos.join(PLUGIN))?;
-    run(Command::new("codesign").args(["--force", "--sign", "-"]).arg(plugin))
+    let bundle = layout(dir);
+    for parent in [&bundle.info_plist, &bundle.executable] {
+        fs::create_dir_all(parent.parent().context("bundle paths have a parent")?)?;
+    }
+    fs::write(&bundle.info_plist, info_plist(version))?;
+    merge(builds, &bundle.executable)?;
+    run(Command::new("codesign")
+        .args(["--force", "--sign", "-"])
+        .arg(&bundle.plugin))
 }
 
 fn bundle(root: &Path) -> Result<PathBuf> {
@@ -223,34 +247,45 @@ fn copy_dir(from: &Path, to: &Path) -> Result<()> {
     Ok(())
 }
 
+fn plugins_folder(home: &Path) -> PathBuf {
+    home.join("Library/Application Support/obs-studio/plugins")
+}
+
 fn install(root: &Path) -> Result<()> {
     let dir = bundle(root)?;
     let home = std::env::var_os("HOME").context("HOME is not set")?;
-    let plugins = PathBuf::from(home).join("Library/Application Support/obs-studio/plugins");
-    let dest = plugins.join(format!("{PLUGIN}.plugin"));
+    let dest = layout(&plugins_folder(Path::new(&home))).plugin;
     if dest.exists() {
         fs::remove_dir_all(&dest)?;
     }
-    copy_dir(&dir.join(format!("{PLUGIN}.plugin")), &dest)?;
+    copy_dir(&layout(&dir).plugin, &dest)?;
     println!("installed {}", dest.display());
     Ok(())
 }
 
-fn dist(root: &Path, version: &str) -> Result<PathBuf> {
+fn dist_name(version: &str) -> Result<String> {
     if version.contains('/') || version.is_empty() {
         bail!("invalid version '{version}'");
     }
+    Ok(format!("{PLUGIN}-{version}"))
+}
+
+fn archive_name(name: &str) -> String {
+    format!("{name}-macos-universal.zip")
+}
+
+fn dist(root: &Path, version: &str) -> Result<PathBuf> {
+    let name = dist_name(version)?;
     let builds = UNIVERSAL
         .iter()
         .map(|target| cargo_build(root, Some(target), version))
         .collect::<Result<Vec<_>>>()?;
-    let name = format!("{PLUGIN}-{version}");
     let dist = root.join("target/dist");
     let dir = dist.join(&name);
     assemble(&dir, &builds, version)?;
     fs::copy(root.join("LICENSE"), dir.join("LICENSE"))?;
     fs::copy(root.join("README.md"), dir.join("README.md"))?;
-    let zip = dist.join(format!("{name}-macos-universal.zip"));
+    let zip = dist.join(archive_name(&name));
     if zip.exists() {
         fs::remove_file(&zip)?;
     }
@@ -259,4 +294,90 @@ fn dist(root: &Path, version: &str) -> Result<PathBuf> {
         .arg(&dir)
         .arg(&zip))?;
     Ok(zip)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_host_build_lands_in_the_plain_release_folder() {
+        let root = Path::new("/w/svid2usb-driver");
+        assert_eq!(
+            dylib_path(root, None),
+            PathBuf::from("/w/svid2usb-driver/target/release/libsvid2usb.dylib")
+        );
+    }
+
+    #[test]
+    fn a_cross_build_lands_under_its_target_triple() {
+        let root = Path::new("/w/svid2usb-driver");
+        let paths: Vec<PathBuf> = UNIVERSAL.iter().map(|t| dylib_path(root, Some(t))).collect();
+        assert_eq!(
+            paths,
+            [
+                PathBuf::from("/w/svid2usb-driver/target/aarch64-apple-darwin/release/libsvid2usb.dylib"),
+                PathBuf::from("/w/svid2usb-driver/target/x86_64-apple-darwin/release/libsvid2usb.dylib"),
+            ]
+        );
+    }
+
+    #[test]
+    fn the_bundle_is_a_macos_plugin_layout() {
+        let bundle = layout(Path::new("/w/target/bundle"));
+        assert_eq!(bundle.plugin, PathBuf::from("/w/target/bundle/svid2usb.plugin"));
+        assert_eq!(
+            bundle.info_plist,
+            PathBuf::from("/w/target/bundle/svid2usb.plugin/Contents/Info.plist")
+        );
+        assert_eq!(
+            bundle.executable,
+            PathBuf::from("/w/target/bundle/svid2usb.plugin/Contents/MacOS/svid2usb")
+        );
+        assert_eq!(
+            bundle.executable.parent(),
+            Some(bundle.plugin.join("Contents/MacOS").as_path())
+        );
+    }
+
+    #[test]
+    fn the_executable_is_named_after_the_bundle() {
+        let bundle = layout(Path::new("relative"));
+        assert_eq!(bundle.executable.file_name().unwrap(), PLUGIN);
+        assert_eq!(bundle.plugin.file_name().unwrap(), format!("{PLUGIN}.plugin").as_str());
+    }
+
+    #[test]
+    fn plugins_go_into_the_obs_support_folder() {
+        assert_eq!(
+            layout(&plugins_folder(Path::new("/Users/someone"))).plugin,
+            PathBuf::from("/Users/someone/Library/Application Support/obs-studio/plugins/svid2usb.plugin")
+        );
+    }
+
+    #[test]
+    fn a_distribution_is_named_after_the_plugin_and_version() {
+        assert_eq!(dist_name("1.2.3").unwrap(), "svid2usb-1.2.3");
+        assert_eq!(dist_name("dev-abc1234").unwrap(), "svid2usb-dev-abc1234");
+        assert_eq!(archive_name("svid2usb-1.2.3"), "svid2usb-1.2.3-macos-universal.zip");
+    }
+
+    #[test]
+    fn a_version_that_could_escape_the_dist_folder_is_refused() {
+        for version in ["", "1.0/../../etc", "/absolute"] {
+            assert!(dist_name(version).is_err(), "{version} should be refused");
+        }
+    }
+
+    #[test]
+    fn the_plist_carries_the_version_and_the_bundle_identity() {
+        let plist = info_plist("1.2.3");
+        assert!(plist.starts_with("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"));
+        assert!(plist.contains("<key>CFBundleIdentifier</key>\n\t<string>io.github.svid2usb</string>"));
+        assert!(plist.contains("<key>CFBundleExecutable</key>\n\t<string>svid2usb</string>"));
+        assert!(plist.contains("<key>CFBundleShortVersionString</key>\n\t<string>1.2.3</string>"));
+        assert!(plist.contains("<key>CFBundleVersion</key>\n\t<string>1.2.3</string>"));
+        assert!(plist.trim_end().ends_with("</plist>"));
+        assert!(!plist.contains('{'), "no format placeholder is left behind");
+    }
 }

@@ -10,6 +10,7 @@ use crate::{FRAME_WIDTH, Input, PRODUCT_ID, Standard, VENDOR_ID};
 
 const TIMEOUT: Duration = Duration::from_secs(1);
 const VIDEO_ENDPOINT: u8 = 0x82;
+const WANTED_PACKET_SIZE: usize = (FRAME_WIDTH * 2 + 4) * 2;
 const VENDOR_IN: u8 = 0xc0;
 const VENDOR_OUT: u8 = 0x40;
 
@@ -105,13 +106,8 @@ impl Device {
     pub fn start(&mut self, sink: FrameSink) -> Result<()> {
         self.stop();
         let video = &self.video;
-        let wanted = (FRAME_WIDTH * 2 + 4) * 2;
-        let &(alternate, packet_size) = video
-            .alternates
-            .iter()
-            .find(|&&(_, size)| size >= wanted)
-            .or_else(|| video.alternates.iter().max_by_key(|&&(_, size)| size))
-            .ok_or(Error::NoVideoInterface)?;
+        let (alternate, packet_size) =
+            pick_alternate(&video.alternates, WANTED_PACKET_SIZE).ok_or(Error::NoVideoInterface)?;
         self.handle.set_alternate_setting(video.number, alternate)?;
 
         let mut stream = Stream::new(&self.handle, VIDEO_ENDPOINT, packet_size, self.standard, sink)?;
@@ -164,6 +160,18 @@ fn iso_packet_size(max_packet_size: u16) -> usize {
     usize::from(max_packet_size & 0x7ff) * (1 + usize::from((max_packet_size >> 11) & 0x03))
 }
 
+fn is_video_endpoint(address: u8, transfer_type: TransferType) -> bool {
+    address == VIDEO_ENDPOINT && transfer_type == TransferType::Isochronous
+}
+
+fn pick_alternate(alternates: &[(u8, usize)], wanted: usize) -> Option<(u8, usize)> {
+    alternates
+        .iter()
+        .find(|&&(_, size)| size >= wanted)
+        .or_else(|| alternates.iter().max_by_key(|&&(_, size)| size))
+        .copied()
+}
+
 fn find_video_interface(handle: &DeviceHandle<Context>) -> Result<VideoInterface> {
     let config = handle.device().active_config_descriptor()?;
     for interface in config.interfaces() {
@@ -172,7 +180,7 @@ fn find_video_interface(handle: &DeviceHandle<Context>) -> Result<VideoInterface
             .filter_map(|setting| {
                 setting
                     .endpoint_descriptors()
-                    .find(|e| e.address() == VIDEO_ENDPOINT && e.transfer_type() == TransferType::Isochronous)
+                    .find(|e| is_video_endpoint(e.address(), e.transfer_type()))
                     .map(|e| (setting.setting_number(), iso_packet_size(e.max_packet_size())))
             })
             .collect();
@@ -188,12 +196,56 @@ fn find_video_interface(handle: &DeviceHandle<Context>) -> Result<VideoInterface
 
 #[cfg(test)]
 mod tests {
-    use super::iso_packet_size;
+    use rusb::TransferType;
+
+    use super::{VIDEO_ENDPOINT, WANTED_PACKET_SIZE, is_video_endpoint, iso_packet_size, pick_alternate};
 
     #[test]
     fn high_bandwidth_packet_sizes() {
         assert_eq!(iso_packet_size(0x1400), 3 * 1024);
         assert_eq!(iso_packet_size(0x0b20), 2 * 800);
         assert_eq!(iso_packet_size(0x0000), 0);
+    }
+
+    #[test]
+    fn a_full_line_pair_plus_headers_is_wanted() {
+        assert_eq!(WANTED_PACKET_SIZE, 2888);
+    }
+
+    #[test]
+    fn only_the_isochronous_video_endpoint_matches() {
+        assert!(is_video_endpoint(VIDEO_ENDPOINT, TransferType::Isochronous));
+        assert!(!is_video_endpoint(VIDEO_ENDPOINT, TransferType::Bulk));
+        assert!(!is_video_endpoint(VIDEO_ENDPOINT, TransferType::Interrupt));
+        assert!(!is_video_endpoint(0x83, TransferType::Isochronous));
+        assert!(!is_video_endpoint(VIDEO_ENDPOINT & 0x7f, TransferType::Isochronous));
+    }
+
+    #[test]
+    fn the_first_alternate_that_fits_wins() {
+        let alternates = [(0, 0), (1, 1024), (2, 2048), (3, 2888), (4, 3072)];
+        assert_eq!(pick_alternate(&alternates, WANTED_PACKET_SIZE), Some((3, 2888)));
+    }
+
+    #[test]
+    fn a_larger_earlier_alternate_is_not_traded_for_a_tighter_later_one() {
+        let alternates = [(1, 3072), (2, 2888)];
+        assert_eq!(pick_alternate(&alternates, WANTED_PACKET_SIZE), Some((1, 3072)));
+    }
+
+    #[test]
+    fn the_largest_alternate_is_the_fallback() {
+        let alternates = [(0, 0), (1, 1448), (2, 2048), (3, 1024)];
+        assert_eq!(pick_alternate(&alternates, WANTED_PACKET_SIZE), Some((2, 2048)));
+    }
+
+    #[test]
+    fn an_interface_without_alternates_has_nothing_to_pick() {
+        assert_eq!(pick_alternate(&[], WANTED_PACKET_SIZE), None);
+    }
+
+    #[test]
+    fn a_zero_sized_alternate_is_still_the_fallback() {
+        assert_eq!(pick_alternate(&[(0, 0)], WANTED_PACKET_SIZE), Some((0, 0)));
     }
 }
