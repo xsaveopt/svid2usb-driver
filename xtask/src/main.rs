@@ -370,6 +370,32 @@ mod tests {
     }
 
     #[test]
+    fn copying_a_bundle_keeps_nested_folders_and_file_contents() {
+        let work = Path::new(env!("CARGO_MANIFEST_DIR")).join("../target/xtask-tests/copy-dir");
+        if work.exists() {
+            fs::remove_dir_all(&work).unwrap();
+        }
+        let from = layout(&work.join("from"));
+        fs::create_dir_all(from.executable.parent().unwrap()).unwrap();
+        fs::write(&from.info_plist, info_plist("1.2.3")).unwrap();
+        fs::write(&from.executable, b"binary").unwrap();
+
+        let to = layout(&work.join("to"));
+        copy_dir(&from.plugin, &to.plugin).unwrap();
+
+        assert_eq!(fs::read_to_string(&to.info_plist).unwrap(), info_plist("1.2.3"));
+        assert_eq!(fs::read(&to.executable).unwrap(), b"binary");
+        fs::remove_dir_all(&work).unwrap();
+    }
+
+    #[test]
+    fn a_missing_source_folder_is_an_error() {
+        let work = Path::new(env!("CARGO_MANIFEST_DIR")).join("../target/xtask-tests/missing");
+        assert!(copy_dir(&work.join("absent"), &work.join("dest")).is_err());
+        fs::remove_dir_all(&work).unwrap();
+    }
+
+    #[test]
     fn the_plist_carries_the_version_and_the_bundle_identity() {
         let plist = info_plist("1.2.3");
         assert!(plist.starts_with("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"));

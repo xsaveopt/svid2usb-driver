@@ -297,6 +297,7 @@ mod tests {
     use em28281::Error;
 
     use super::*;
+    use crate::obs::fake::{self, FakeData, Kind};
 
     struct FakeSettings {
         values: HashMap<String, i64>,
@@ -803,6 +804,169 @@ mod tests {
             lines(&["connect", "info: device connected", "start", "poll", "start", "poll"])
         );
         assert_eq!(fake.started, vec![base, pal]);
+    }
+
+    fn registered() -> crate::obs_sys::obs_source_info {
+        obs::register::<Capture>();
+        fake::take().registered[0].0
+    }
+
+    #[test]
+    fn the_settings_ui_offers_input_standard_and_every_picture_control() {
+        let info = registered();
+        let raw = unsafe { info.get_properties.unwrap()(std::ptr::null_mut()) };
+        let properties = fake::properties_from(raw);
+        let list = properties.list.borrow();
+
+        let mut expected = vec!["input".to_owned(), "standard".to_owned()];
+        expected.extend(CONTROLS.iter().map(|c| c.name.to_owned()));
+        assert_eq!(properties.names(), expected);
+
+        assert_eq!(list[0].label, "Input");
+        assert_eq!(
+            *list[0].items.borrow(),
+            [("Composite".to_owned(), 0), ("S-Video".to_owned(), 1)]
+        );
+        assert_eq!(list[1].label, "Video standard");
+        assert_eq!(
+            *list[1].items.borrow(),
+            [("NTSC (480i)".to_owned(), 0), ("PAL (576i)".to_owned(), 1)]
+        );
+        assert!(list[..2].iter().all(|p| p.modified.borrow().is_some()));
+
+        for (property, control) in list[2..].iter().zip(CONTROLS) {
+            assert_eq!(property.label, control.label);
+            assert_eq!(
+                property.kind,
+                Kind::Slider {
+                    min: control.min,
+                    max: control.max,
+                    step: 1
+                }
+            );
+        }
+    }
+
+    #[test]
+    fn the_list_values_match_what_the_settings_are_read_as() {
+        let info = registered();
+        let properties = fake::properties_from(unsafe { info.get_properties.unwrap()(std::ptr::null_mut()) });
+        let list = properties.list.borrow();
+        let second = |i: usize| list[i].items.borrow()[1].1;
+        let settings = FakeData::with(&[("input", second(0)), ("standard", second(1))]);
+        assert_eq!(read_selection(&settings.data()), (Input::SVideo, Standard::Pal));
+    }
+
+    #[test]
+    fn the_defaults_callback_starts_on_composite_ntsc() {
+        let info = registered();
+        let settings = FakeData::default();
+        unsafe { info.get_defaults.unwrap()(settings.raw()) };
+        assert_eq!(settings.default_of("input"), Some(0));
+        assert_eq!(settings.default_of("standard"), Some(0));
+        for control in CONTROLS {
+            assert_eq!(
+                settings.default_of(control.name),
+                Some(i64::from(control.default_value(Input::Composite, Standard::Ntsc))),
+                "{}",
+                control.name
+            );
+        }
+    }
+
+    #[test]
+    fn switching_the_selection_in_the_ui_moves_the_picture_defaults_along() {
+        let info = registered();
+        let raw = unsafe { info.get_properties.unwrap()(std::ptr::null_mut()) };
+        let properties = fake::properties_from(raw);
+        let modified = properties.list.borrow()[1].modified.borrow().unwrap();
+
+        let settings = FakeData::with(&[("input", 1), ("standard", 1)]);
+        assert!(unsafe { modified(raw, std::ptr::null_mut(), settings.raw()) });
+        for control in CONTROLS {
+            assert_eq!(
+                settings.default_of(control.name),
+                Some(i64::from(control.default_value(Input::SVideo, Standard::Pal))),
+                "{}",
+                control.name
+            );
+        }
+    }
+
+    #[test]
+    fn an_update_replaces_the_wanted_config() {
+        let capture = Capture {
+            shared: shared_with(config(Input::Composite, Standard::Ntsc)),
+            thread: None,
+        };
+        let settings = FakeData::with(&[("input", 1), ("standard", 1), ("hue", 5000)]);
+        obs::Source::update(&capture, &settings.data());
+
+        let wanted = *capture.shared.wanted.lock().unwrap();
+        assert_eq!((wanted.input, wanted.standard), (Input::SVideo, Standard::Pal));
+        assert_eq!(wanted.picture, read_config(&settings.data()).picture);
+        assert_eq!(wanted.picture[3], 127);
+    }
+
+    #[test]
+    fn dropping_a_capture_stops_its_worker_and_waits_for_it() {
+        let shared = shared_with(config(Input::Composite, Standard::Ntsc));
+        let finished = Arc::new(AtomicBool::new(false));
+        let worker = Arc::clone(&shared);
+        let done = Arc::clone(&finished);
+        let thread = std::thread::spawn(move || {
+            while worker.running.load(Ordering::Acquire) {
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            done.store(true, Ordering::Release);
+        });
+        drop(Capture {
+            shared: Arc::clone(&shared),
+            thread: Some(thread),
+        });
+        assert!(!shared.running.load(Ordering::Acquire));
+        assert!(finished.load(Ordering::Acquire));
+    }
+
+    #[test]
+    fn the_usb_backend_without_a_device_reports_it_as_missing() {
+        let mut usb = Usb {
+            output: fake::output(0x1),
+            device: None,
+        };
+        let picture = [0; CONTROLS.len()];
+        assert!(matches!(
+            usb.start(&config(Input::Composite, Standard::Ntsc)),
+            Err(Error::NotFound)
+        ));
+        assert!(matches!(usb.apply_picture(&picture, &picture), Err(Error::NotFound)));
+        assert!(matches!(usb.poll(), Err(Error::NotFound)));
+        usb.disconnect();
+        assert!(usb.device.is_none());
+        assert!(fake::take().frames.is_empty());
+    }
+
+    #[test]
+    fn the_usb_backend_clears_and_logs_through_obs() {
+        let mut usb = Usb {
+            output: fake::output(0xabc),
+            device: None,
+        };
+        usb.clear();
+        usb.log_info("up");
+        usb.log_warn("down");
+        let calls = fake::take();
+        assert_eq!(calls.frames.len(), 1);
+        assert_eq!(calls.frames[0].0, 0xabc);
+        assert!(calls.frames[0].1.is_none());
+        let levels: Vec<_> = calls.logs.iter().map(|&(level, _)| level).collect();
+        assert_eq!(
+            levels,
+            [
+                crate::obs_sys::_bindgen_ty_1::LOG_INFO as i32,
+                crate::obs_sys::_bindgen_ty_1::LOG_WARNING as i32,
+            ]
+        );
     }
 
     #[test]
