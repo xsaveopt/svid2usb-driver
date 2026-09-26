@@ -970,6 +970,177 @@ mod tests {
     }
 
     #[test]
+    fn a_dropped_device_is_reconnected_and_started_again() {
+        let base = config(Input::Composite, Standard::Ntsc);
+        let shared = shared_with(base);
+        let mut fake = Fake::new(
+            &shared,
+            Script {
+                connect: vec![Ok(()), Ok(())],
+                start: vec![Ok(()), Ok(())],
+                poll: vec![Err(Error::Disconnected), Ok(())],
+                ..Script::default()
+            },
+        );
+        let clock = FakeClock::new();
+        run(&shared, &mut fake, &clock);
+
+        let stopped = format!("warn: capture stopped: {}", Error::Disconnected);
+        assert_eq!(
+            fake.events,
+            lines(&[
+                "connect",
+                "info: device connected",
+                "start",
+                "poll",
+                &stopped,
+                "disconnect",
+                "clear",
+                "connect",
+                "info: device connected",
+                "start",
+                "poll",
+            ])
+        );
+        assert_eq!(fake.started, vec![base, base]);
+        assert!(fake.pictures.is_empty());
+        assert!(clock.sleeps().is_empty());
+    }
+
+    #[test]
+    fn a_picture_change_while_disconnected_is_part_of_the_restart() {
+        let base = config(Input::Composite, Standard::Ntsc);
+        let mut changed = base;
+        changed.picture[2] = 33;
+        let shared = shared_with(base);
+        let mut fake = Fake::new(
+            &shared,
+            Script {
+                connect: vec![Ok(()), Ok(())],
+                start: vec![Ok(()), Ok(())],
+                poll: vec![Err(Error::Disconnected), Ok(())],
+                updates: vec![changed],
+                ..Script::default()
+            },
+        );
+        run(&shared, &mut fake, &FakeClock::new());
+
+        assert_eq!(fake.started, vec![base, changed]);
+        assert!(fake.pictures.is_empty());
+    }
+
+    #[test]
+    fn a_selection_change_while_disconnected_is_started_after_reconnecting() {
+        let base = config(Input::Composite, Standard::Ntsc);
+        let mut svideo = config(Input::SVideo, Standard::Pal);
+        svideo.picture[5] = 4;
+        let shared = shared_with(base);
+        let mut fake = Fake::new(
+            &shared,
+            Script {
+                connect: vec![Ok(()), Err(Error::NotFound), Ok(())],
+                start: vec![Ok(()), Ok(())],
+                poll: vec![Err(Error::Disconnected), Ok(())],
+                updates: vec![svideo],
+                ..Script::default()
+            },
+        );
+        let clock = FakeClock::new();
+        run(&shared, &mut fake, &clock);
+
+        assert_eq!(fake.started, vec![base, svideo]);
+        assert!(fake.pictures.is_empty());
+        assert_eq!(clock.sleeps().len(), ticks(RETRY));
+    }
+
+    #[test]
+    fn the_same_wait_reason_is_logged_again_after_a_successful_connection() {
+        let shared = shared_with(config(Input::Composite, Standard::Ntsc));
+        let mut fake = Fake::new(
+            &shared,
+            Script {
+                connect: vec![Err(Error::NotFound), Ok(()), Err(Error::NotFound)],
+                start: vec![Ok(())],
+                poll: vec![Err(Error::Disconnected)],
+                ..Script::default()
+            },
+        );
+        run(&shared, &mut fake, &FakeClock::new());
+
+        let missing = format!("info: waiting for the device: {}", Error::NotFound);
+        let waits = fake.events.iter().filter(|e| **e == missing).count();
+        assert_eq!(waits, 2);
+    }
+
+    struct Updating<'a> {
+        inner: &'a mut Fake,
+        pending: Option<Config>,
+    }
+
+    impl Backend for Updating<'_> {
+        fn connect(&mut self) -> em28281::Result<()> {
+            self.inner.connect()
+        }
+
+        fn start(&mut self, config: &Config) -> em28281::Result<()> {
+            let result = self.inner.start(config);
+            if let Some(next) = self.pending.take() {
+                *self.inner.shared.wanted.lock().unwrap() = next;
+            }
+            result
+        }
+
+        fn apply_picture(&mut self, picture: &Picture, previous: &Picture) -> em28281::Result<()> {
+            self.inner.apply_picture(picture, previous)
+        }
+
+        fn poll(&mut self) -> em28281::Result<()> {
+            self.inner.poll()
+        }
+
+        fn disconnect(&mut self) {
+            self.inner.disconnect();
+        }
+
+        fn clear(&mut self) {
+            self.inner.clear();
+        }
+
+        fn log_info(&mut self, message: &str) {
+            self.inner.log_info(message);
+        }
+
+        fn log_warn(&mut self, message: &str) {
+            self.inner.log_warn(message);
+        }
+    }
+
+    #[test]
+    fn a_picture_change_during_a_failed_start_is_picked_up_by_the_next_start() {
+        let base = config(Input::Composite, Standard::Ntsc);
+        let mut changed = base;
+        changed.picture[1] = 200;
+        let shared = shared_with(base);
+        let mut fake = Fake::new(
+            &shared,
+            Script {
+                connect: vec![Ok(()), Ok(())],
+                start: vec![Err(Error::NoVideoInterface), Ok(())],
+                poll: vec![Ok(())],
+                ..Script::default()
+            },
+        );
+        let mut backend = Updating {
+            inner: &mut fake,
+            pending: Some(changed),
+        };
+        run(&shared, &mut backend, &FakeClock::new());
+
+        assert_eq!(fake.started, vec![base, changed]);
+        assert!(fake.pictures.is_empty());
+    }
+
+    #[test]
     fn a_capture_that_is_stopped_before_it_begins_touches_nothing() {
         let shared = shared_with(config(Input::Composite, Standard::Ntsc));
         shared.running.store(false, Ordering::Release);

@@ -242,4 +242,267 @@ mod tests {
             }
         }
     }
+
+    const ALL: [(Input, Standard); 4] = [
+        (Input::Composite, Standard::Ntsc),
+        (Input::SVideo, Standard::Ntsc),
+        (Input::Composite, Standard::Pal),
+        (Input::SVideo, Standard::Pal),
+    ];
+
+    fn w(reg: u16, value: u8) -> Op {
+        Op::Write(reg, value)
+    }
+
+    fn resolution(vbi: u8, start: u8, window: u8, height: u8) -> Vec<Op> {
+        vec![
+            w(0x27, 0x34),
+            w(0x10, 0x10),
+            w(0x34, 0x00),
+            w(0x36, 180),
+            w(0x37, vbi),
+            w(0x35, start),
+            w(0x11, 0x51),
+            w(0x28, 0x01),
+            w(0x29, 179),
+            w(0x2a, 0x01),
+            w(0x2b, window),
+            w(0x1c, 0x00),
+            w(0x1d, 0x02),
+            w(0x1e, 180),
+            w(0x1f, height),
+            w(0x1b, 0x00),
+            Op::WriteBlock(0x30, [0, 0]),
+            Op::WriteBlock(0x32, [0, 0]),
+            w(0x26, 0x00),
+        ]
+    }
+
+    fn vmux_common() -> Vec<Op> {
+        vec![
+            w(0x24, 0x00),
+            w(0x25, 0x02),
+            w(0x2e, 0x00),
+            w(0x7a0b, 0x00),
+            w(0xb6, 0x8f),
+            w(0xb8, 0x00),
+            w(0x7a1c, 0x1e),
+            w(0x7a1d, 0x99),
+            w(0x7a1e, 0x99),
+            w(0x7a1f, 0x9a),
+            w(0x7a20, 0x3d),
+            w(0x7a21, 0x3e),
+            w(0x7a29, 0x00),
+            w(0x7a2f, 0x52),
+            w(0x7a40, 0x05),
+            w(0x7a51, 0x00),
+            w(0x7ac1, 0x1b),
+        ]
+    }
+
+    fn latch() -> Vec<Op> {
+        vec![w(0x7a3f, 0x01), w(0x7a3f, 0x00)]
+    }
+
+    fn clock_and_audio() -> Vec<Op> {
+        vec![
+            w(0x0f, 0x87),
+            Op::Sleep(10),
+            Op::WriteBits(0x0e, 0x80, 0xc0),
+            Op::Sleep(10),
+        ]
+    }
+
+    #[test]
+    fn init_sets_the_clocks_waits_and_loads_the_colour_defaults() {
+        assert_eq!(
+            init_ops(),
+            vec![
+                w(0x0f, 0x07),
+                w(0x06, 0x41),
+                Op::Sleep(50),
+                w(0x20, 0x10),
+                w(0x21, 0x00),
+                w(0x22, 0x10),
+                w(0x23, 0x00),
+                w(0x24, 0x00),
+                w(0x25, 0x00),
+                w(0x14, 0x20),
+                w(0x15, 0x20),
+                w(0x16, 0x20),
+                w(0x17, 0x20),
+                w(0x18, 0x00),
+                w(0x19, 0x00),
+                w(0x1a, 0x00),
+            ]
+        );
+    }
+
+    #[test]
+    fn starting_capture_wakes_the_bus_and_enables_video_in() {
+        assert_eq!(
+            capture_ops(true),
+            vec![
+                Op::WriteBits(0x0c, 0x10, 0x10),
+                w(0x48, 0x00),
+                w(0x12, 0x67),
+                Op::Sleep(10),
+            ]
+        );
+    }
+
+    #[test]
+    fn stopping_capture_clears_only_the_bit_that_starting_set() {
+        let stop = capture_ops(false);
+        assert_eq!(stop, vec![Op::WriteBits(0x0c, 0x00, 0x10), w(0x12, 0x27)]);
+        let Op::WriteBits(reg, _, mask) = capture_ops(true)[0] else {
+            panic!("capture starts with a masked write");
+        };
+        assert_eq!(stop[0], Op::WriteBits(reg, 0x00, mask));
+    }
+
+    #[test]
+    fn ntsc_composite_configure_matches_the_golden_sequence() {
+        let mut golden = resolution(12, 0x09, 119, 120);
+        golden.extend(vmux_common());
+        golden.extend([
+            w(0x38, 0x01),
+            w(0xb1, 0x70),
+            w(0xb3, 0x00),
+            w(0xb5, 0x00),
+            w(0x7a02, 0x4f),
+        ]);
+        golden.extend(latch());
+        golden.extend([
+            w(0x7a01, 0x0d),
+            w(0x7a04, 0xdd),
+            w(0x7a07, 0x60),
+            w(0x7a08, 0x7a),
+            w(0x7a09, 0x02),
+            w(0x7a0a, 0x7c),
+            w(0x7a0c, 0x8a),
+            w(0x7a0f, 0x1c),
+            w(0x7a18, 0x20),
+            w(0x7a19, 0x74),
+            w(0x7a1a, 0x5d),
+            w(0x7a1b, 0x17),
+            w(0x7a2e, 0x85),
+            w(0x7a31, 0x63),
+            w(0x7a82, 0x42),
+            w(0x7ac0, 0xd4),
+            w(0x7a00, 0x00),
+            w(0x7a03, 0x00),
+            w(0x7a30, 0x22),
+            w(0x7a80, 0x03),
+        ]);
+        golden.extend(latch());
+        golden.extend(clock_and_audio());
+        golden.extend(resolution(12, 0x09, 119, 120));
+        assert_eq!(configure_ops(Input::Composite, Standard::Ntsc), golden);
+    }
+
+    #[test]
+    fn pal_svideo_configure_matches_the_golden_sequence() {
+        let mut golden = resolution(18, 0x07, 143, 144);
+        golden.extend(vmux_common());
+        golden.extend([
+            w(0x38, 0x00),
+            w(0xb1, 0x60),
+            w(0xb3, 0x10),
+            w(0xb5, 0x10),
+            w(0x7a02, 0x4e),
+        ]);
+        golden.extend(latch());
+        golden.extend([
+            w(0x7a04, 0xdc),
+            w(0x7a0c, 0x67),
+            w(0x7a0f, 0x1c),
+            w(0x7a18, 0x28),
+            w(0x7a19, 0x32),
+            w(0x7a1a, 0xb9),
+            w(0x7a1b, 0x86),
+            w(0x7a31, 0xc3),
+            w(0x7a82, 0x52),
+            w(0x7a00, 0x33),
+            w(0x7a01, 0x04),
+            w(0x7a03, 0x04),
+            w(0x7a07, 0x20),
+            w(0x7a08, 0x6a),
+            w(0x7a09, 0x16),
+            w(0x7a0a, 0x80),
+            w(0x7a2e, 0x8a),
+            w(0x7a30, 0x26),
+            w(0x7a80, 0x08),
+        ]);
+        golden.extend(latch());
+        golden.extend(clock_and_audio());
+        golden.extend(resolution(18, 0x07, 143, 144));
+        assert_eq!(configure_ops(Input::SVideo, Standard::Pal), golden);
+    }
+
+    #[test]
+    fn every_configure_is_framed_by_the_same_resolution_block() {
+        for (input, standard) in ALL {
+            let ops = configure_ops(input, standard);
+            let mut head = Vec::new();
+            resolution_ops(&mut head, standard);
+            assert_eq!(&ops[..head.len()], head.as_slice(), "{input:?} {standard:?}");
+            assert_eq!(
+                &ops[ops.len() - head.len()..],
+                head.as_slice(),
+                "{input:?} {standard:?}"
+            );
+            assert_eq!(
+                &ops[head.len()..head.len() + VMUX_COMMON.len()],
+                vmux_common().as_slice()
+            );
+        }
+    }
+
+    #[test]
+    fn every_configure_selects_the_input_mux_for_its_input() {
+        for (input, standard) in ALL {
+            let expected = u8::from(input == Input::Composite);
+            assert_eq!(
+                last_write(0x38, input, standard),
+                Some(expected),
+                "{input:?} {standard:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn every_configure_sets_the_whole_decoder_mode_for_its_selection() {
+        for (input, standard) in ALL {
+            for reg in [
+                0x7a00, 0x7a01, 0x7a03, 0x7a07, 0x7a08, 0x7a09, 0x7a0a, 0x7a2e, 0x7a30, 0x7a80,
+            ] {
+                assert!(
+                    configure_ops(input, standard)
+                        .iter()
+                        .any(|op| matches!(*op, Op::Write(r, _) if r == reg)),
+                    "{input:?} {standard:?} never writes {reg:#06x}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn the_selections_program_different_decoder_modes() {
+        let modes: Vec<_> = ALL
+            .iter()
+            .map(|&(input, standard)| last_write(0x7a80, input, standard))
+            .collect();
+        assert_eq!(modes, vec![Some(0x03), Some(0x04), Some(0x07), Some(0x08)]);
+    }
+
+    #[test]
+    fn last_write_prefers_configure_over_init_and_ignores_masked_writes() {
+        assert_eq!(last_write(0x25, Input::Composite, Standard::Ntsc), Some(0x02));
+        assert_eq!(last_write(0x0f, Input::Composite, Standard::Ntsc), Some(0x87));
+        assert_eq!(last_write(0x06, Input::Composite, Standard::Ntsc), Some(0x41));
+        assert_eq!(last_write(0x0e, Input::Composite, Standard::Ntsc), None);
+        assert_eq!(last_write(0x30, Input::Composite, Standard::Ntsc), None);
+        assert_eq!(last_write(0x7a20, Input::Composite, Standard::Pal), Some(0x3d));
+    }
 }
