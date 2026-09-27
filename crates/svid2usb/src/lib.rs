@@ -9,6 +9,7 @@
 )]
 mod obs_sys;
 
+mod audio;
 mod capture;
 mod obs;
 

@@ -13,6 +13,7 @@ test = true
 doctest = false
 
 [dependencies]
+cpal.workspace = true
 em28281.workspace = true
 
 [lints]

@@ -1,6 +1,6 @@
 use std::cell::RefCell;
 use std::collections::HashMap;
-use std::ffi::{CStr, c_char, c_int, c_longlong};
+use std::ffi::{CStr, CString, c_char, c_int, c_longlong};
 use std::ptr;
 use std::rc::Rc;
 
@@ -12,6 +12,7 @@ pub(crate) struct Calls {
     pub(crate) registered: Vec<(sys::obs_source_info, usize)>,
     pub(crate) logs: Vec<(c_int, String)>,
     pub(crate) frames: Vec<(usize, Option<sys::obs_source_frame>)>,
+    pub(crate) audio: Vec<(usize, sys::obs_source_audio)>,
     pub(crate) colors: Vec<(u32, u32, u32)>,
 }
 
@@ -34,6 +35,7 @@ fn text(raw: *const c_char) -> String {
 #[derive(Default)]
 pub(crate) struct FakeData {
     values: HashMap<String, i64>,
+    strings: HashMap<String, CString>,
     defaults: RefCell<HashMap<String, i64>>,
 }
 
@@ -41,8 +43,14 @@ impl FakeData {
     pub(crate) fn with(values: &[(&str, i64)]) -> Self {
         FakeData {
             values: values.iter().map(|&(k, v)| (k.to_owned(), v)).collect(),
+            strings: HashMap::new(),
             defaults: RefCell::default(),
         }
+    }
+
+    pub(crate) fn with_string(mut self, key: &str, value: &str) -> Self {
+        self.strings.insert(key.to_owned(), CString::new(value).unwrap());
+        self
     }
 
     pub(crate) fn raw(&self) -> *mut sys::obs_data_t {
@@ -73,6 +81,7 @@ pub(crate) struct FakeProperty {
     pub(crate) label: String,
     pub(crate) kind: Kind,
     pub(crate) items: RefCell<Vec<(String, i64)>>,
+    pub(crate) strings: RefCell<Vec<(String, String)>>,
     pub(crate) modified: RefCell<sys::obs_property_modified_t>,
 }
 
@@ -103,6 +112,7 @@ fn add(
         label: text(label),
         kind,
         items: RefCell::default(),
+        strings: RefCell::default(),
         modified: RefCell::new(None),
     });
     let raw = Rc::as_ptr(&property).cast_mut().cast();
@@ -129,6 +139,14 @@ extern "C" fn obs_data_get_int(data: *mut sys::obs_data_t, name: *const c_char) 
         .copied()
         .or_else(|| data.default_of(&key))
         .unwrap_or(0)
+}
+
+#[unsafe(no_mangle)]
+extern "C" fn obs_data_get_string(data: *mut sys::obs_data_t, name: *const c_char) -> *const c_char {
+    let data = unsafe { &*data.cast::<FakeData>() };
+    data.strings
+        .get(&text(name))
+        .map_or(c"".as_ptr(), |value| value.as_ptr())
 }
 
 #[unsafe(no_mangle)]
@@ -178,6 +196,17 @@ extern "C" fn obs_property_list_add_int(p: *mut sys::obs_property_t, name: *cons
 }
 
 #[unsafe(no_mangle)]
+extern "C" fn obs_property_list_add_string(
+    p: *mut sys::obs_property_t,
+    name: *const c_char,
+    value: *const c_char,
+) -> usize {
+    let mut strings = property(p).strings.borrow_mut();
+    strings.push((text(name), text(value)));
+    strings.len() - 1
+}
+
+#[unsafe(no_mangle)]
 extern "C" fn video_format_get_parameters_for_format(
     color_space: sys::video_colorspace::Type,
     range: sys::video_range_type::Type,
@@ -210,6 +239,12 @@ extern "C" fn os_gettime_ns() -> u64 {
 extern "C" fn obs_source_output_video(source: *mut sys::obs_source_t, frame: *const sys::obs_source_frame) {
     let frame = unsafe { frame.as_ref() }.copied();
     record(|calls| calls.frames.push((source.addr(), frame)));
+}
+
+#[unsafe(no_mangle)]
+extern "C" fn obs_source_output_audio(source: *mut sys::obs_source_t, audio: *const sys::obs_source_audio) {
+    let audio = unsafe { *audio };
+    record(|calls| calls.audio.push((source.addr(), audio)));
 }
 
 #[unsafe(no_mangle)]

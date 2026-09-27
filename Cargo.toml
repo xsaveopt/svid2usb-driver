@@ -13,6 +13,7 @@ publish = false
 anyhow = "1.0.104"
 bindgen = "0.73.2"
 clap = { version = "4.6.6", features = ["derive"] }
+cpal = "0.18.2"
 em28281 = { path = "crates/em28281" }
 libusb1-sys = { version = "0.7.0", features = ["vendored"] }
 rusb = { version = "0.9.4", features = ["vendored"] }

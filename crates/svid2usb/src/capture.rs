@@ -6,10 +6,12 @@ use std::time::{Duration, Instant};
 
 use em28281::{CONTROLS, Device, Input, Standard};
 
+use crate::audio::{self, Audio};
 use crate::obs::{self, ColorParameters, Data, Output, Properties, Settings, log};
 
 const RETRY: Duration = Duration::from_secs(1);
 const POLL: Duration = Duration::from_millis(100);
+const AUDIO_DEVICE: &str = "audio_device";
 
 type Picture = [i32; CONTROLS.len()];
 
@@ -28,6 +30,7 @@ struct Shared {
 pub(crate) struct Capture {
     shared: Arc<Shared>,
     thread: Option<JoinHandle<()>>,
+    audio: Audio,
 }
 
 impl Drop for Capture {
@@ -90,11 +93,13 @@ impl obs::Source for Capture {
             .spawn(move || run(&worker, &mut Usb { output, device: None }, &SystemClock))
             .map_err(|e| log::warn(&format!("could not start the capture thread: {e}")))
             .ok();
-        Capture { shared, thread }
+        let audio = Audio::start(output, settings.string(AUDIO_DEVICE));
+        Capture { shared, thread, audio }
     }
 
     fn update(&self, settings: &Data) {
         *self.shared.wanted.lock().unwrap_or_else(PoisonError::into_inner) = read_config(settings);
+        self.audio.select(settings.string(AUDIO_DEVICE));
     }
 
     fn defaults(settings: &Data) {
@@ -106,6 +111,9 @@ impl obs::Source for Capture {
     fn properties(properties: &Properties) {
         properties.add_list("input", "Input", &[("Composite", 0), ("S-Video", 1)]);
         properties.add_list("standard", "Video standard", &[("NTSC (480i)", 0), ("PAL (576i)", 1)]);
+        let mut devices = vec![("None".to_owned(), String::new())];
+        devices.extend(audio::devices());
+        properties.add_string_list(AUDIO_DEVICE, "Audio device", &devices);
         for control in CONTROLS {
             properties.add_int_slider(control.name, control.label, control.min, control.max);
         }
@@ -812,13 +820,13 @@ mod tests {
     }
 
     #[test]
-    fn the_settings_ui_offers_input_standard_and_every_picture_control() {
+    fn the_settings_ui_offers_input_standard_audio_and_every_picture_control() {
         let info = registered();
         let raw = unsafe { info.get_properties.unwrap()(std::ptr::null_mut()) };
         let properties = fake::properties_from(raw);
         let list = properties.list.borrow();
 
-        let mut expected = vec!["input".to_owned(), "standard".to_owned()];
+        let mut expected = vec!["input".to_owned(), "standard".to_owned(), AUDIO_DEVICE.to_owned()];
         expected.extend(CONTROLS.iter().map(|c| c.name.to_owned()));
         assert_eq!(properties.names(), expected);
 
@@ -834,7 +842,17 @@ mod tests {
         );
         assert!(list[..2].iter().all(|p| p.modified.borrow().is_some()));
 
-        for (property, control) in list[2..].iter().zip(CONTROLS) {
+        assert_eq!(list[2].label, "Audio device");
+        assert_eq!(
+            list[2].kind,
+            Kind::List {
+                combo: crate::obs_sys::obs_combo_type::OBS_COMBO_TYPE_LIST,
+                format: crate::obs_sys::obs_combo_format::OBS_COMBO_FORMAT_STRING,
+            }
+        );
+        assert_eq!(list[2].strings.borrow()[0], ("None".to_owned(), String::new()));
+
+        for (property, control) in list[3..].iter().zip(CONTROLS) {
             assert_eq!(property.label, control.label);
             assert_eq!(
                 property.kind,
@@ -898,9 +916,12 @@ mod tests {
         let capture = Capture {
             shared: shared_with(config(Input::Composite, Standard::Ntsc)),
             thread: None,
+            audio: Audio::idle(),
         };
-        let settings = FakeData::with(&[("input", 1), ("standard", 1), ("hue", 5000)]);
+        let settings = FakeData::with(&[("input", 1), ("standard", 1), ("hue", 5000)])
+            .with_string(AUDIO_DEVICE, "coreaudio:cable");
         obs::Source::update(&capture, &settings.data());
+        assert_eq!(capture.audio.wanted(), "coreaudio:cable");
 
         let wanted = *capture.shared.wanted.lock().unwrap();
         assert_eq!((wanted.input, wanted.standard), (Input::SVideo, Standard::Pal));
@@ -923,6 +944,7 @@ mod tests {
         drop(Capture {
             shared: Arc::clone(&shared),
             thread: Some(thread),
+            audio: Audio::idle(),
         });
         assert!(!shared.running.load(Ordering::Acquire));
         assert!(finished.load(Ordering::Acquire));

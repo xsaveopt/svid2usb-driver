@@ -1,5 +1,6 @@
 use std::ffi::{CStr, CString, c_char, c_void};
 use std::ptr;
+use std::time::Duration;
 
 use crate::obs_sys as sys;
 
@@ -18,7 +19,7 @@ pub(crate) fn register<S: Source>() {
     let info = sys::obs_source_info {
         id: S::ID.as_ptr(),
         type_: sys::obs_source_type::OBS_SOURCE_TYPE_INPUT,
-        output_flags: sys::OBS_SOURCE_ASYNC_VIDEO | sys::OBS_SOURCE_DO_NOT_DUPLICATE,
+        output_flags: sys::OBS_SOURCE_ASYNC_VIDEO | sys::OBS_SOURCE_AUDIO | sys::OBS_SOURCE_DO_NOT_DUPLICATE,
         get_name: Some(name::<S>),
         create: Some(create::<S>),
         destroy: Some(destroy::<S>),
@@ -81,6 +82,16 @@ pub(crate) trait Settings {
 
 pub(crate) struct Data(*mut sys::obs_data_t);
 
+impl Data {
+    pub(crate) fn string(&self, key: &str) -> String {
+        let value = unsafe { sys::obs_data_get_string(self.0, cstring(key).as_ptr()) };
+        if value.is_null() {
+            return String::new();
+        }
+        unsafe { CStr::from_ptr(value) }.to_string_lossy().into_owned()
+    }
+}
+
 impl Settings for Data {
     fn int(&self, key: &str) -> i64 {
         unsafe { sys::obs_data_get_int(self.0, cstring(key).as_ptr()) }
@@ -109,6 +120,21 @@ impl Properties {
             sys::obs_property_set_modified_callback(list, self.on_list_change);
             for &(item, value) in items {
                 sys::obs_property_list_add_int(list, cstring(item).as_ptr(), value);
+            }
+        }
+    }
+
+    pub(crate) fn add_string_list(&self, name: &str, label: &str, items: &[(String, String)]) {
+        unsafe {
+            let list = sys::obs_properties_add_list(
+                self.raw,
+                cstring(name).as_ptr(),
+                cstring(label).as_ptr(),
+                sys::obs_combo_type::OBS_COMBO_TYPE_LIST,
+                sys::obs_combo_format::OBS_COMBO_FORMAT_STRING,
+            );
+            for (item, value) in items {
+                sys::obs_property_list_add_string(list, cstring(item).as_ptr(), cstring(value).as_ptr());
             }
         }
     }
@@ -148,6 +174,15 @@ impl ColorParameters {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct AudioFormat {
+    pub(crate) sample: sys::audio_format::Type,
+    pub(crate) sample_size: usize,
+    pub(crate) channels: usize,
+    pub(crate) speakers: sys::speaker_layout::Type,
+    pub(crate) rate: u32,
+}
+
 #[derive(Clone, Copy)]
 pub(crate) struct Output(*mut sys::obs_source_t);
 
@@ -171,6 +206,24 @@ impl Output {
         frame.data[0] = data.as_ptr().cast_mut();
         frame.linesize[0] = (width * 2) as u32;
         self.video(&raw const frame);
+    }
+
+    pub(crate) fn audio(self, data: &[u8], format: &AudioFormat, latency: Duration) {
+        let frames = data.len() / (format.sample_size * format.channels).max(1);
+        if frames == 0 {
+            return;
+        }
+        let now = unsafe { sys::os_gettime_ns() };
+        let mut audio = sys::obs_source_audio {
+            frames: frames as u32,
+            speakers: format.speakers,
+            format: format.sample,
+            samples_per_sec: format.rate,
+            timestamp: now.saturating_sub(u64::try_from(latency.as_nanos()).unwrap_or(u64::MAX)),
+            ..Default::default()
+        };
+        audio.data[0] = data.as_ptr();
+        unsafe { sys::obs_source_output_audio(self.0, &raw const audio) };
     }
 
     pub(crate) fn clear(self) {
@@ -280,7 +333,7 @@ mod tests {
     }
 
     #[test]
-    fn a_source_registers_as_an_async_video_input_with_its_size() {
+    fn a_source_registers_as_an_async_video_and_audio_input_with_its_size() {
         register::<Probe>();
         let calls = fake::take();
         let [(info, size)] = calls.registered[..] else {
@@ -291,7 +344,7 @@ mod tests {
         assert_eq!(info.type_, sys::obs_source_type::OBS_SOURCE_TYPE_INPUT);
         assert_eq!(
             info.output_flags,
-            sys::OBS_SOURCE_ASYNC_VIDEO | sys::OBS_SOURCE_DO_NOT_DUPLICATE
+            sys::OBS_SOURCE_ASYNC_VIDEO | sys::OBS_SOURCE_AUDIO | sys::OBS_SOURCE_DO_NOT_DUPLICATE
         );
         assert_eq!(info.icon_type, sys::obs_icon_type::OBS_ICON_TYPE_CAMERA);
         let name = unsafe { info.get_name.unwrap()(ptr::null_mut()) };
@@ -458,6 +511,48 @@ mod tests {
         fake::output(1).yuy2(&[0_u8; 4 * 2 * 2 - 1], 4, 2, &color);
         fake::output(1).yuy2(&[], 720, 480, &color);
         assert!(fake::take().frames.is_empty());
+    }
+
+    fn stereo_16bit() -> AudioFormat {
+        AudioFormat {
+            sample: sys::audio_format::AUDIO_FORMAT_16BIT,
+            sample_size: 2,
+            channels: 2,
+            speakers: sys::speaker_layout::SPEAKERS_STEREO,
+            rate: 48_000,
+        }
+    }
+
+    #[test]
+    fn audio_is_sent_as_whole_interleaved_frames_stamped_back_by_the_latency() {
+        let samples = vec![0_u8; 10 * 4 + 3];
+        fake::output(0xa0d).audio(&samples, &stereo_16bit(), Duration::from_nanos(890));
+
+        let calls = fake::take();
+        let [(source, audio)] = calls.audio[..] else {
+            panic!("expected a single audio packet");
+        };
+        assert_eq!(source, 0xa0d);
+        assert_eq!(audio.frames, 10);
+        assert_eq!(audio.format, sys::audio_format::AUDIO_FORMAT_16BIT);
+        assert_eq!(audio.speakers, sys::speaker_layout::SPEAKERS_STEREO);
+        assert_eq!(audio.samples_per_sec, 48_000);
+        assert_eq!(audio.timestamp, fake::NOW - 890);
+        assert_eq!(audio.data[0], samples.as_ptr());
+        assert!(audio.data[1..].iter().all(|plane| plane.is_null()));
+    }
+
+    #[test]
+    fn audio_shorter_than_one_frame_is_dropped() {
+        fake::output(1).audio(&[0_u8; 3], &stereo_16bit(), Duration::ZERO);
+        assert!(fake::take().audio.is_empty());
+    }
+
+    #[test]
+    fn a_missing_string_setting_reads_as_empty() {
+        let settings = FakeData::default().with_string("present", "value");
+        assert_eq!(settings.data().string("present"), "value");
+        assert_eq!(settings.data().string("absent"), "");
     }
 
     #[test]
