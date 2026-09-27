@@ -112,14 +112,15 @@ fn bindings(root: &Path) -> Result<()> {
         .clang_arg(format!("-I{}", simde.display()))
         .clang_arg(format!("-I{}", generated.display()))
         .allowlist_function(
-            "obs_register_source_s|obs_source_output_video|obs_data_get_int|obs_data_set_default_int|\
-             obs_properties_create|obs_properties_add_list|obs_property_list_add_int|\
+            "obs_register_source_s|obs_source_output_video|obs_source_output_audio|\
+             obs_data_get_int|obs_data_get_string|obs_data_set_default_int|\
+             obs_properties_create|obs_properties_add_list|obs_property_list_add_int|obs_property_list_add_string|\
              obs_properties_add_int_slider|obs_property_set_modified_callback|\
              blog|os_gettime_ns|video_format_get_parameters_for_format",
         )
-        .allowlist_type("obs_source_info|obs_source_frame")
+        .allowlist_type("obs_source_info|obs_source_frame|obs_source_audio")
         .allowlist_var(
-            "LIBOBS_API_(MAJOR|MINOR|PATCH)_VER|LOG_(ERROR|WARNING|INFO)|OBS_SOURCE_(ASYNC_VIDEO|DO_NOT_DUPLICATE)",
+            "LIBOBS_API_(MAJOR|MINOR|PATCH)_VER|LOG_(ERROR|WARNING|INFO)|OBS_SOURCE_(ASYNC_VIDEO|AUDIO|DO_NOT_DUPLICATE)",
         )
         .default_enum_style(bindgen::EnumVariation::ModuleConsts)
         .derive_default(true)

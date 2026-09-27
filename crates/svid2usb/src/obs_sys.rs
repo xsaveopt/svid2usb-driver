@@ -1,6 +1,7 @@
 pub const LIBOBS_API_MAJOR_VER: u32 = 32;
 pub const LIBOBS_API_MINOR_VER: u32 = 2;
 pub const LIBOBS_API_PATCH_VER: u32 = 2;
+pub const OBS_SOURCE_AUDIO: u32 = 2;
 pub const OBS_SOURCE_ASYNC_VIDEO: u32 = 5;
 pub const OBS_SOURCE_DO_NOT_DUPLICATE: u32 = 128;
 pub mod _bindgen_ty_1 {
@@ -30,6 +31,33 @@ pub struct gs_effect {
     _unused: [u8; 0],
 }
 pub type gs_effect_t = gs_effect;
+pub mod audio_format {
+    #[allow(unused_imports)]
+    use super::*;
+    pub type Type = ::std::os::raw::c_uint;
+    pub const AUDIO_FORMAT_UNKNOWN: Type = 0;
+    pub const AUDIO_FORMAT_U8BIT: Type = 1;
+    pub const AUDIO_FORMAT_16BIT: Type = 2;
+    pub const AUDIO_FORMAT_32BIT: Type = 3;
+    pub const AUDIO_FORMAT_FLOAT: Type = 4;
+    pub const AUDIO_FORMAT_U8BIT_PLANAR: Type = 5;
+    pub const AUDIO_FORMAT_16BIT_PLANAR: Type = 6;
+    pub const AUDIO_FORMAT_32BIT_PLANAR: Type = 7;
+    pub const AUDIO_FORMAT_FLOAT_PLANAR: Type = 8;
+}
+pub mod speaker_layout {
+    #[allow(unused_imports)]
+    use super::*;
+    pub type Type = ::std::os::raw::c_uint;
+    pub const SPEAKERS_UNKNOWN: Type = 0;
+    pub const SPEAKERS_MONO: Type = 1;
+    pub const SPEAKERS_STEREO: Type = 2;
+    pub const SPEAKERS_2POINT1: Type = 3;
+    pub const SPEAKERS_4POINT0: Type = 4;
+    pub const SPEAKERS_4POINT1: Type = 5;
+    pub const SPEAKERS_5POINT1: Type = 6;
+    pub const SPEAKERS_7POINT1: Type = 8;
+}
 #[repr(C)]
 #[derive(Debug, Copy, Clone)]
 pub struct audio_output_data {
@@ -124,6 +152,12 @@ unsafe extern "C" {
     );
 }
 unsafe extern "C" {
+    pub fn obs_data_get_string(
+        data: *mut obs_data_t,
+        name: *const ::std::os::raw::c_char,
+    ) -> *const ::std::os::raw::c_char;
+}
+unsafe extern "C" {
     pub fn obs_data_get_int(data: *mut obs_data_t, name: *const ::std::os::raw::c_char) -> ::std::os::raw::c_longlong;
 }
 pub mod obs_combo_format {
@@ -188,6 +222,13 @@ pub type obs_property_modified_t = ::std::option::Option<
 >;
 unsafe extern "C" {
     pub fn obs_property_set_modified_callback(p: *mut obs_property_t, modified: obs_property_modified_t);
+}
+unsafe extern "C" {
+    pub fn obs_property_list_add_string(
+        p: *mut obs_property_t,
+        name: *const ::std::os::raw::c_char,
+        val: *const ::std::os::raw::c_char,
+    ) -> usize;
 }
 unsafe extern "C" {
     pub fn obs_property_list_add_int(
@@ -578,6 +619,37 @@ impl Default for obs_audio_data {
 }
 #[repr(C)]
 #[derive(Debug, Copy, Clone)]
+pub struct obs_source_audio {
+    pub data: [*const u8; 8usize],
+    pub frames: u32,
+    pub speakers: speaker_layout::Type,
+    pub format: audio_format::Type,
+    pub samples_per_sec: u32,
+    pub timestamp: u64,
+}
+#[allow(clippy::unnecessary_operation, clippy::identity_op)]
+const _: () = {
+    ["Size of obs_source_audio"][::std::mem::size_of::<obs_source_audio>() - 88usize];
+    ["Alignment of obs_source_audio"][::std::mem::align_of::<obs_source_audio>() - 8usize];
+    ["Offset of field: obs_source_audio::data"][::std::mem::offset_of!(obs_source_audio, data) - 0usize];
+    ["Offset of field: obs_source_audio::frames"][::std::mem::offset_of!(obs_source_audio, frames) - 64usize];
+    ["Offset of field: obs_source_audio::speakers"][::std::mem::offset_of!(obs_source_audio, speakers) - 68usize];
+    ["Offset of field: obs_source_audio::format"][::std::mem::offset_of!(obs_source_audio, format) - 72usize];
+    ["Offset of field: obs_source_audio::samples_per_sec"]
+        [::std::mem::offset_of!(obs_source_audio, samples_per_sec) - 76usize];
+    ["Offset of field: obs_source_audio::timestamp"][::std::mem::offset_of!(obs_source_audio, timestamp) - 80usize];
+};
+impl Default for obs_source_audio {
+    fn default() -> Self {
+        let mut s = ::std::mem::MaybeUninit::<Self>::uninit();
+        unsafe {
+            ::std::ptr::write_bytes(s.as_mut_ptr(), 0, 1);
+            s.assume_init()
+        }
+    }
+}
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
 pub struct obs_source_frame {
     pub data: [*mut u8; 8usize],
     pub linesize: [u32; 8usize],
@@ -632,6 +704,9 @@ impl Default for obs_source_frame {
 }
 unsafe extern "C" {
     pub fn obs_source_output_video(source: *mut obs_source_t, frame: *const obs_source_frame);
+}
+unsafe extern "C" {
+    pub fn obs_source_output_audio(source: *mut obs_source_t, audio: *const obs_source_audio);
 }
 unsafe extern "C" {
     pub fn os_gettime_ns() -> u64;
