@@ -89,8 +89,15 @@ jobs:
           echo "ARCHIVE=target/dist/svid2usb-${GITHUB_REF_NAME#v}-macos-universal.zip" >> "$GITHUB_ENV"
 
       - name: Create GitHub release
-        uses: softprops/action-gh-release@v3
-        with:
-          files: ${{ env.ARCHIVE }}
-          generate_release_notes: true
-          prerelease: ${{ contains(github.ref_name, '-') }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PRERELEASE: ${{ contains(github.ref_name, '-') }}
+        run: |
+          files=()
+          [ ! -f "$ARCHIVE" ] || files=("$ARCHIVE")
+          if gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release edit "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --prerelease="$PRERELEASE"
+            [ ${#files[@]} -eq 0 ] || gh release upload "$GITHUB_REF_NAME" "${files[@]}" --repo "$GITHUB_REPOSITORY" --clobber
+          else
+            gh release create "$GITHUB_REF_NAME" "${files[@]}" --repo "$GITHUB_REPOSITORY" --title "$GITHUB_REF_NAME" --prerelease="$PRERELEASE" --generate-notes
+          fi
