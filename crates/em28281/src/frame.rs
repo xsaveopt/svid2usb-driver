@@ -317,8 +317,14 @@ mod tests {
             asm.push(packet, &mut |f| frames.push(f.to_vec()));
             frames
         };
-        assert!(pushed(&mut asm, &packet(&header(VIDEO, true), 0x41, 16)).is_empty());
-        assert!(pushed(&mut asm, &packet(&header(VIDEO, false), 0x42, 16)).is_empty());
+        assert_eq!(
+            pushed(&mut asm, &packet(&header(VIDEO, true), 0x41, 16)),
+            [] as [Vec<u8>; 0]
+        );
+        assert_eq!(
+            pushed(&mut asm, &packet(&header(VIDEO, false), 0x42, 16)),
+            [] as [Vec<u8>; 0]
+        );
         let frames = pushed(&mut asm, &packet(&header(VIDEO, true), 0x43, 16));
         assert_eq!(frames.len(), 1);
         assert_eq!(&frames[0][..16], &[0x41; 16]);

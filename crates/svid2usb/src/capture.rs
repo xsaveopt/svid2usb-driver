@@ -618,7 +618,7 @@ mod tests {
         shared.running.store(false, Ordering::Release);
         let clock = FakeClock::new();
         sleep_while_running(&shared, RETRY, &clock);
-        assert!(clock.sleeps().is_empty());
+        assert_eq!(clock.sleeps(), [] as [Duration; 0]);
     }
 
     #[test]
@@ -660,7 +660,7 @@ mod tests {
             lines(&["connect", "info: device connected", "start", "poll", "poll"])
         );
         assert_eq!(fake.started, vec![config(Input::Composite, Standard::Ntsc)]);
-        assert!(clock.sleeps().is_empty());
+        assert_eq!(clock.sleeps(), [] as [Duration; 0]);
     }
 
     #[test]
@@ -691,7 +691,7 @@ mod tests {
                 "clear",
             ])
         );
-        assert!(clock.sleeps().is_empty());
+        assert_eq!(clock.sleeps(), [] as [Duration; 0]);
     }
 
     #[test]
@@ -1025,8 +1025,8 @@ mod tests {
             ])
         );
         assert_eq!(fake.started, vec![base, base]);
-        assert!(fake.pictures.is_empty());
-        assert!(clock.sleeps().is_empty());
+        assert_eq!(fake.pictures, [] as [([i32; 17], [i32; 17]); 0]);
+        assert_eq!(clock.sleeps(), [] as [Duration; 0]);
     }
 
     #[test]
@@ -1048,7 +1048,7 @@ mod tests {
         run(&shared, &mut fake, &FakeClock::new());
 
         assert_eq!(fake.started, vec![base, changed]);
-        assert!(fake.pictures.is_empty());
+        assert_eq!(fake.pictures, [] as [([i32; 17], [i32; 17]); 0]);
     }
 
     #[test]
@@ -1071,7 +1071,7 @@ mod tests {
         run(&shared, &mut fake, &clock);
 
         assert_eq!(fake.started, vec![base, svideo]);
-        assert!(fake.pictures.is_empty());
+        assert_eq!(fake.pictures, [] as [([i32; 17], [i32; 17]); 0]);
         assert_eq!(clock.sleeps().len(), ticks(RETRY));
     }
 
@@ -1159,7 +1159,7 @@ mod tests {
         run(&shared, &mut backend, &FakeClock::new());
 
         assert_eq!(fake.started, vec![base, changed]);
-        assert!(fake.pictures.is_empty());
+        assert_eq!(fake.pictures, [] as [([i32; 17], [i32; 17]); 0]);
     }
 
     #[test]
@@ -1168,6 +1168,6 @@ mod tests {
         shared.running.store(false, Ordering::Release);
         let mut fake = Fake::new(&shared, Script::default());
         run(&shared, &mut fake, &FakeClock::new());
-        assert!(fake.events.is_empty());
+        assert_eq!(fake.events, [] as [String; 0]);
     }
 }

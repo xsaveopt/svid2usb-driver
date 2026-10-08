@@ -58,7 +58,7 @@ mod tests {
         obs_module_set_pointer(ptr::null_mut());
         let calls = fake::take();
         assert!(calls.registered.is_empty());
-        assert!(calls.logs.is_empty());
+        assert_eq!(calls.logs, [] as [(i32, String); 0]);
     }
 
     #[test]

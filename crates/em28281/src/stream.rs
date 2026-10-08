@@ -288,7 +288,7 @@ mod tests {
             packet(LIBUSB_TRANSFER_TIMED_OUT, 4),
         ];
         shared.deliver(&descriptors, &headers(4));
-        assert!(frames_of(&frames).is_empty());
+        assert_eq!(frames_of(&frames), [] as [(usize, usize, usize); 0]);
     }
 
     #[test]
@@ -301,7 +301,7 @@ mod tests {
             packet(LIBUSB_TRANSFER_COMPLETED, 4),
         ];
         shared.deliver(&descriptors, &buffer);
-        assert!(frames_of(&frames).is_empty());
+        assert_eq!(frames_of(&frames), [] as [(usize, usize, usize); 0]);
     }
 
     #[test]

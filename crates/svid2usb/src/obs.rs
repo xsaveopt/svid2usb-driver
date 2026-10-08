@@ -580,6 +580,6 @@ mod tests {
     #[test]
     fn a_log_message_with_a_nul_byte_is_dropped() {
         log::warn("bad\0message");
-        assert!(fake::take().logs.is_empty());
+        assert_eq!(fake::take().logs, [] as [(i32, String); 0]);
     }
 }
